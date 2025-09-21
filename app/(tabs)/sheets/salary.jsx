@@ -9,20 +9,9 @@ import {
   Alert,
   ActivityIndicator,
 } from "react-native";
-import { useLocalSearchParams } from "expo-router";
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import { CommonStyles } from "../../../components/CommonStyles";
-import { db } from "../../../firebaseConfig";
-import {
-  doc,
-  getDoc,
-  updateDoc,
-  collection,
-  addDoc,
-  serverTimestamp,
-} from "firebase/firestore";
-import { useAuth } from "../../../context/AuthContext";
 
+/* ---------------------------- Reusable Rows ---------------------------- */
 const EditableInputRow = ({
   label,
   value,
@@ -43,10 +32,36 @@ const EditableInputRow = ({
   );
 };
 
+const OtherExpenseRow = ({ index, expense, onChangeName, onChangeAmount, onRemove }) => {
+  return (
+    <View style={styles.otherExpenseRow}>
+      <View style={{ flex: 1 }}>
+        <EditableInputRow
+          label={`Expense ${index + 1} Name`}
+          value={expense.name}
+          onChangeText={(t) => onChangeName(expense.id, t)}
+          keyboardType="default"
+        />
+      </View>
+      <View style={{ flex: 1 }}>
+        <EditableInputRow
+          label="Amount"
+          value={expense.amount}
+          onChangeText={(t) => onChangeAmount(expense.id, t)}
+          keyboardType="numeric"
+        />
+      </View>
+      <TouchableOpacity style={styles.removeBtn} onPress={() => onRemove(expense.id)}>
+        <Text style={styles.removeBtnText}>Remove</Text>
+      </TouchableOpacity>
+    </View>
+  );
+};
+
+/* ---------------------------- Main Screen ---------------------------- */
 export default function SalaryAccountSheet() {
-  const { sheetId } = useLocalSearchParams();
-  const { user } = useAuth();
   const [loading, setLoading] = useState(true);
+
   const [salary, setSalary] = useState("");
   const [dailyTransportCost, setDailyTransportCost] = useState("");
   const [dailyLunchCost, setDailyLunchCost] = useState("");
@@ -55,92 +70,54 @@ export default function SalaryAccountSheet() {
   const [sheetTitle, setSheetTitle] = useState("");
   const [currencySymbol, setCurrencySymbol] = useState("₦");
 
-  const isExistingSheet = !!sheetId;
-
+  // Initialize defaults (no backend)
   useEffect(() => {
-    const fetchSheetData = async () => {
-      if (!user) {
-        Alert.alert("Error", "User not authenticated.");
-        setLoading(false);
-        return;
-      }
+    setOtherExpenses([
+      { id: "rent", name: "Rent", amount: "" },
+      { id: "subscriptions", name: "Subscriptions", amount: "" },
+    ]);
+    setSheetTitle(`New Salary Sheet - ${new Date().toLocaleDateString()}`);
+    setLoading(false);
+  }, []);
 
-      try {
-        const storedCurrencyCode = await AsyncStorage.getItem("userCurrency");
-        if (storedCurrencyCode) {
-          const symbols = { NGN: "₦", USD: "$", EUR: "€", GBP: "£" };
-          setCurrencySymbol(symbols[storedCurrencyCode] || "₦");
-        }
-      } catch (e) {
-        console.error("Failed to load currency from storage", e);
-      }
-
-      if (isExistingSheet) {
-        try {
-          const docRef = doc(db, `users/${user.uid}/salarySheets`, sheetId);
-          const docSnap = await getDoc(docRef);
-          if (docSnap.exists()) {
-            const data = docSnap.data();
-            setSalary(data.salary?.toString() || "");
-            setDailyTransportCost(data.dailyTransportCost?.toString() || "");
-            setDailyLunchCost(data.dailyLunchCost?.toString() || "");
-            setWorkDaysMonthly(data.workDaysMonthly?.toString() || "");
-            setOtherExpenses(data.otherExpenses || []);
-            setSheetTitle(data.title || "");
-          } else {
-            Alert.alert("Error", "Sheet not found.");
-          }
-        } catch (e) {
-          console.error("Error fetching document:", e);
-          Alert.alert("Error", "Failed to load sheet data.");
-        }
-      } else {
-        setOtherExpenses([
-          { id: "rent", name: "Rent", amount: "" },
-          { id: "subscriptions", name: "Subscriptions", amount: "" },
-        ]);
-        setSheetTitle(`New Salary Sheet - ${new Date().toLocaleDateString()}`);
-      }
-      setLoading(false);
-    };
-
-    fetchSheetData();
-  }, [sheetId, user]);
-
-  const handleOtherExpenseChange = (id, value) => {
-    const newExpenses = otherExpenses.map((exp) =>
-      exp.id === id ? { ...exp, amount: value } : exp
+  const handleOtherExpenseNameChange = (id, value) => {
+    setOtherExpenses((prev) =>
+      prev.map((exp) => (exp.id === id ? { ...exp, name: value } : exp))
     );
-    setOtherExpenses(newExpenses);
+  };
+
+  const handleOtherExpenseAmountChange = (id, value) => {
+    setOtherExpenses((prev) =>
+      prev.map((exp) => (exp.id === id ? { ...exp, amount: value } : exp))
+    );
+  };
+
+  const removeOtherExpense = (id) => {
+    setOtherExpenses((prev) => prev.filter((e) => e.id !== id));
   };
 
   const addOtherExpense = () => {
-    setOtherExpenses([
-      ...otherExpenses,
+    setOtherExpenses((prev) => [
+      ...prev,
       { id: Date.now().toString(), name: "", amount: "" },
     ]);
   };
 
+  const toNum = (v) => {
+    const n = parseFloat(String(v).replace(/,/g, ""));
+    return Number.isFinite(n) ? n : 0;
+  };
+
   const calculateTotalExpenses = () => {
-    const transport =
-      parseFloat(dailyTransportCost || 0) * parseFloat(workDaysMonthly || 0);
-    const lunch =
-      parseFloat(dailyLunchCost || 0) * parseFloat(workDaysMonthly || 0);
-    const other = otherExpenses.reduce(
-      (sum, exp) => sum + parseFloat(exp.amount || 0),
-      0
-    );
+    const transport = toNum(dailyTransportCost) * toNum(workDaysMonthly);
+    const lunch = toNum(dailyLunchCost) * toNum(workDaysMonthly);
+    const other = otherExpenses.reduce((sum, exp) => sum + toNum(exp.amount), 0);
     return transport + lunch + other;
   };
 
-  const handleSaveOrSubmit = async () => {
-    if (!user) {
-      Alert.alert("Error", "You must be logged in to save data.");
-      return;
-    }
-
+  const handleCalculate = () => {
     const totalExpenses = calculateTotalExpenses();
-    const totalSalary = parseFloat(salary || 0);
+    const totalSalary = toNum(salary);
     const difference = totalSalary - totalExpenses;
 
     let alertMessage = "";
@@ -149,7 +126,7 @@ export default function SalaryAccountSheet() {
         2
       )} remaining after expenses! 🎉`;
     } else if (difference < 0) {
-      alertMessage = `Sorry, your expenses exceed your salary by ${currencySymbol}${Math.abs(
+      alertMessage = `Your expenses exceed your salary by ${currencySymbol}${Math.abs(
         difference
       ).toFixed(2)}. Consider reviewing your spending. 📉`;
     } else {
@@ -157,39 +134,6 @@ export default function SalaryAccountSheet() {
     }
 
     Alert.alert("Monthly Balance", alertMessage);
-
-    const sheetData = {
-      title: sheetTitle,
-      type: "salary",
-      salary: totalSalary,
-      dailyTransportCost: parseFloat(dailyTransportCost || 0),
-      dailyLunchCost: parseFloat(dailyLunchCost || 0),
-      workDaysMonthly: parseFloat(workDaysMonthly || 0),
-      otherExpenses: otherExpenses.map((exp) => ({
-        name: exp.name,
-        amount: parseFloat(exp.amount || 0),
-      })),
-      totalExpenses: totalExpenses,
-      remainingBalance: difference,
-      timestamp: serverTimestamp(),
-    };
-
-    try {
-      if (isExistingSheet) {
-        const docRef = doc(db, `users/${user.uid}/salarySheets`, sheetId);
-        await updateDoc(docRef, sheetData);
-        Alert.alert("Success", "Sheet updated successfully!");
-      } else {
-        await addDoc(
-          collection(db, `users/${user.uid}/salarySheets`),
-          sheetData
-        );
-        Alert.alert("Success", "New sheet saved to Firebase!");
-      }
-    } catch (e) {
-      console.error("Error saving document: ", e);
-      Alert.alert("Error", "Failed to save data to Firebase.");
-    }
   };
 
   if (loading) {
@@ -199,6 +143,8 @@ export default function SalaryAccountSheet() {
       </View>
     );
   }
+
+  const monthlyDailyExpenses = (toNum(dailyTransportCost) + toNum(dailyLunchCost)) * toNum(workDaysMonthly);
 
   return (
     <ScrollView style={CommonStyles.container}>
@@ -212,6 +158,18 @@ export default function SalaryAccountSheet() {
       </View>
 
       <View style={styles.sheetContent}>
+        {/* Currency selector (simple text input to keep it backend-free) */}
+        <View style={styles.inlineRow}>
+          <Text style={styles.inlineLabel}>Currency Symbol:</Text>
+          <TextInput
+            style={styles.inlineInput}
+            value={currencySymbol}
+            onChangeText={setCurrencySymbol}
+            placeholder="₦ / $ / € / £"
+            maxLength={2}
+          />
+        </View>
+
         <View style={styles.section}>
           <Text style={CommonStyles.sectionHeader}>SALARY</Text>
           <EditableInputRow
@@ -222,7 +180,7 @@ export default function SalaryAccountSheet() {
           />
           <Text style={CommonStyles.totalText}>
             Total Salary: {currencySymbol}
-            {parseFloat(salary || 0).toFixed(2)}
+            {toNum(salary).toFixed(2)}
           </Text>
         </View>
 
@@ -250,45 +208,36 @@ export default function SalaryAccountSheet() {
           />
           <Text style={styles.calculatedValue}>
             Total Monthly Daily Expenses: {currencySymbol}
-            {(
-              (parseFloat(dailyTransportCost || 0) +
-                parseFloat(dailyLunchCost || 0)) *
-              parseFloat(workDaysMonthly || 0)
-            ).toFixed(2)}
+            {monthlyDailyExpenses.toFixed(2)}
           </Text>
 
           <Text style={[styles.subHeader, { marginTop: 20 }]}>
             Other Monthly Expenses:
           </Text>
+
           {otherExpenses.map((exp, index) => (
-            <View key={exp.id}>
-              <EditableInputRow
-                label={exp.name || `Other Expense ${index + 1}`}
-                value={exp.amount}
-                onChangeText={(text) => handleOtherExpenseChange(exp.id, text)}
-                keyboardType="numeric"
-              />
-            </View>
+            <OtherExpenseRow
+              key={exp.id}
+              index={index}
+              expense={exp}
+              onChangeName={handleOtherExpenseNameChange}
+              onChangeAmount={handleOtherExpenseAmountChange}
+              onRemove={removeOtherExpense}
+            />
           ))}
-          <TouchableOpacity
-            style={styles.addMoreButton}
-            onPress={addOtherExpense}
-          >
+
+          <TouchableOpacity style={styles.addMoreButton} onPress={addOtherExpense}>
             <Text style={styles.addMoreButtonText}>+ Add Other Expense</Text>
           </TouchableOpacity>
+
           <Text style={CommonStyles.totalText}>
             Total Expenses: {currencySymbol}
             {calculateTotalExpenses().toFixed(2)}
           </Text>
         </View>
 
-        <TouchableOpacity
-          style={CommonStyles.submitButton}
-          onPress={handleSaveOrSubmit}
-        >
-          <Text style={CommonStyles.submitButtonText}>
-            {isExistingSheet ? "Update Sheet" : "Save Sheet & Calculate"}
-          </Text>
+        <TouchableOpacity style={CommonStyles.submitButton} onPress={handleCalculate}>
+          <Text style={CommonStyles.submitButtonText}>Calculate Balance</Text>
         </TouchableOpacity>
       </View>
     </ScrollView>
@@ -338,5 +287,41 @@ const styles = StyleSheet.create({
     fontWeight: "bold",
     marginBottom: 10,
     color: "#555",
+  },
+  otherExpenseRow: {
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: "#e5e5e5",
+    borderRadius: 8,
+    padding: 6,
+  },
+  removeBtn: {
+    backgroundColor: "#dc3545",
+    paddingVertical: 8,
+    borderRadius: 6,
+    alignItems: "center",
+    marginTop: 6,
+  },
+  removeBtnText: {
+    color: "#fff",
+    fontWeight: "600",
+  },
+  inlineRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    marginBottom: 12,
+  },
+  inlineLabel: {
+    fontSize: 14,
+    fontWeight: "600",
+  },
+  inlineInput: {
+    borderWidth: 1,
+    borderColor: "#ccc",
+    borderRadius: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    minWidth: 60,
   },
 });

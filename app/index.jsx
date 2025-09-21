@@ -49,7 +49,11 @@ export default function HomeScreen() {
 
 const styles = StyleSheet.create({
   buttonContainer: {
-    marginTop: 30,
+    display: 'flex',
+    flexDirection: "column",
+    justifyContent: "center",
+    alignContent: "center",
+    marginLeft: 42,
     width: "80%",
   },
   accountTypeButton: {

@@ -12,16 +12,60 @@ import {
 import { useLocalSearchParams } from "expo-router";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { CommonStyles } from "../../../components/CommonStyles";
-import { db } from "../../../firebaseConfig";
-import {
-  doc,
-  getDoc,
-  updateDoc,
-  collection,
-  addDoc,
-  serverTimestamp,
-} from "firebase/firestore";
-import { useAuth } from "../../../context/AuthContext";
+
+/** ============= Local storage helpers (AsyncStorage) ============= */
+const LIST_KEY = "traderSheets:list";
+const ITEM_KEY = (id) => `traderSheets:item:${id}`;
+
+const readJSON = async (key, fallback) => {
+  try {
+    const v = await AsyncStorage.getItem(key);
+    return v ? JSON.parse(v) : fallback;
+  } catch {
+    return fallback;
+  }
+};
+const writeJSON = async (key, value) =>
+  AsyncStorage.setItem(key, JSON.stringify(value));
+const nowIso = () => new Date().toISOString();
+const newId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+async function getSheetById(id) {
+  return readJSON(ITEM_KEY(id), null);
+}
+async function upsertSheet(sheet) {
+  const ids = (await readJSON(LIST_KEY, [])) ?? [];
+  if (!ids.includes(sheet.id)) {
+    ids.push(sheet.id);
+    await writeJSON(LIST_KEY, ids);
+  }
+  await writeJSON(ITEM_KEY(sheet.id), sheet);
+  return sheet.id;
+}
+async function createSheet(data) {
+  const id = newId();
+  const sheet = {
+    id,
+    title: data.title ?? `Trader Sheet - ${new Date().toLocaleDateString()}`,
+    type: "trader",
+    products: data.products ?? [],
+    generalExpenses: data.generalExpenses ?? [],
+    totalSales: data.totalSales ?? 0,
+    totalExpenses: data.totalExpenses ?? 0,
+    profitOrLoss: data.profitOrLoss ?? 0,
+    createdAt: nowIso(),
+    updatedAt: nowIso(),
+  };
+  await upsertSheet(sheet);
+  return id;
+}
+async function updateSheet(id, patch) {
+  const current = (await getSheetById(id)) ?? { id, createdAt: nowIso() };
+  const next = { ...current, ...patch, id, updatedAt: nowIso() };
+  await upsertSheet(next);
+  return id;
+}
+/** =============================================================== */
 
 // Helper component for editable input rows
 const EditableInputRow = ({
@@ -35,7 +79,7 @@ const EditableInputRow = ({
       <Text style={CommonStyles.editableTextLabel}>{label}:</Text>
       <TextInput
         style={CommonStyles.editableTextInput}
-        value={value}
+        value={String(value ?? "")}
         onChangeText={onChangeText}
         keyboardType={keyboardType}
         placeholder={`Enter ${label.toLowerCase()}`}
@@ -45,26 +89,23 @@ const EditableInputRow = ({
 };
 
 export default function TraderAccountSheet() {
-  const { sheetId } = useLocalSearchParams();
-  const { user } = useAuth();
+  const params = useLocalSearchParams();
+  // sheetId can be string | string[] | undefined
+  const resolvedSheetId =
+    typeof params.sheetId === "string" ? params.sheetId : undefined;
+
   const [loading, setLoading] = useState(true);
   const [products, setProducts] = useState([]);
   const [generalExpenses, setGeneralExpenses] = useState([]);
   const [sheetTitle, setSheetTitle] = useState("");
   const [currencySymbol, setCurrencySymbol] = useState("₦");
 
-  const isExistingSheet = !!sheetId;
+  const isExistingSheet = !!resolvedSheetId;
 
   // Load existing data or set initial state
   useEffect(() => {
     const fetchSheetData = async () => {
-      if (!user) {
-        Alert.alert("Error", "User not authenticated.");
-        setLoading(false);
-        return;
-      }
-
-      // Load currency symbol
+      // Load currency symbol preference
       try {
         const storedCurrencyCode = await AsyncStorage.getItem("userCurrency");
         if (storedCurrencyCode) {
@@ -72,26 +113,20 @@ export default function TraderAccountSheet() {
           setCurrencySymbol(symbols[storedCurrencyCode] || "₦");
         }
       } catch (e) {
-        console.error("Failed to load currency from storage", e);
+        console.warn("Failed to load currency from storage", e);
       }
 
       if (isExistingSheet) {
-        try {
-          const docRef = doc(db, `users/${user.uid}/traderSheets`, sheetId);
-          const docSnap = await getDoc(docRef);
-          if (docSnap.exists()) {
-            const data = docSnap.data();
-            setProducts(data.products || []);
-            setGeneralExpenses(data.generalExpenses || []);
-            setSheetTitle(data.title || "");
-          } else {
-            Alert.alert("Error", "Sheet not found.");
-          }
-        } catch (e) {
-          console.error("Error fetching document:", e);
-          Alert.alert("Error", "Failed to load sheet data.");
+        const existing = await getSheetById(String(resolvedSheetId));
+        if (existing) {
+          setProducts(existing.products || []);
+          setGeneralExpenses(existing.generalExpenses || []);
+          setSheetTitle(existing.title || "");
+        } else {
+          Alert.alert("Error", "Sheet not found.");
         }
       } else {
+        // fresh sheet defaults
         setProducts([
           {
             id: Date.now().toString(),
@@ -112,47 +147,44 @@ export default function TraderAccountSheet() {
         ]);
         setSheetTitle(`New Trader Sheet - ${new Date().toLocaleDateString()}`);
       }
+
       setLoading(false);
     };
 
     fetchSheetData();
-  }, [sheetId, user]);
+  }, [resolvedSheetId, isExistingSheet]);
 
   const handleProductChange = (index, field, value) => {
     const newProducts = [...products];
     newProducts[index][field] = value;
 
-    // Convert to number for calculations
-    const lowStockThreshold = parseFloat(
-      newProducts[index].lowStockThreshold || 0
-    );
-    const initialStock = parseFloat(newProducts[index].initialStock || 0);
+    const p = newProducts[index];
+    const initialStock = parseFloat(p.initialStock || 0);
+    const quantitySold = parseFloat(p.quantitySold || 0);
+    const lowStockThreshold = parseFloat(p.lowStockThreshold || 0);
 
-    // Update current stock and check for low stock
-    if (field === "quantitySold" || field === "initialStock") {
-      const remainingStock = initialStock - parseFloat(value || 0);
+    // recompute current stock whenever relevant fields change
+    if (["quantitySold", "initialStock", "lowStockThreshold"].includes(field)) {
+      const remainingStock = initialStock - quantitySold;
       newProducts[index].currentStock = remainingStock;
 
-      if (
+      if (remainingStock < 0) {
+        Alert.alert(
+          "Stock Error",
+          `You are trying to sell more '${p.name || "Product"}' than available.\nCurrent stock: ${initialStock}. Quantity sold: ${quantitySold}.`
+        );
+      } else if (
         remainingStock <= lowStockThreshold &&
-        remainingStock >= 0 &&
-        parseFloat(value || 0) > 0
+        initialStock > 0 &&
+        quantitySold > 0
       ) {
         Alert.alert(
           "Low Stock Alert! 🚨",
-          `'${newProducts[index].name}' is now at ${remainingStock} units. Consider reordering soon.`
-        );
-      } else if (remainingStock < 0) {
-        Alert.alert(
-          "Stock Error",
-          `You are trying to sell more '${
-            newProducts[index].name
-          }' than available. Current stock: ${initialStock}. Quantity sold: ${parseFloat(
-            value || 0
-          )}.`
+          `'${p.name || "Product"}' is now at ${remainingStock} units. Consider reordering soon.`
         );
       }
     }
+
     setProducts(newProducts);
   };
 
@@ -164,8 +196,8 @@ export default function TraderAccountSheet() {
   };
 
   const addProduct = () => {
-    setProducts([
-      ...products,
+    setProducts((prev) => [
+      ...prev,
       {
         id: Date.now().toString(),
         name: "",
@@ -180,13 +212,13 @@ export default function TraderAccountSheet() {
   };
 
   const calculateTotalExpenses = () => {
-    let productExpenses = products.reduce((sum, p) => {
+    const productExpenses = products.reduce((sum, p) => {
       const cost = parseFloat(p.costPrice || 0);
       const qty = parseFloat(p.quantitySold || 0);
       return sum + cost * qty;
     }, 0);
 
-    let generalExp = generalExpenses.reduce((sum, exp) => {
+    const generalExp = generalExpenses.reduce((sum, exp) => {
       return sum + parseFloat(exp.amount || 0);
     }, 0);
 
@@ -202,11 +234,6 @@ export default function TraderAccountSheet() {
   };
 
   const handleSaveOrSubmit = async () => {
-    if (!user) {
-      Alert.alert("Error", "You must be logged in to save data.");
-      return;
-    }
-
     const totalExpenses = calculateTotalExpenses();
     const totalSales = calculateTotalSales();
     const difference = totalSales - totalExpenses;
@@ -230,39 +257,36 @@ export default function TraderAccountSheet() {
       title: sheetTitle,
       type: "trader",
       products: products.map((p) => ({
+        id: p.id,
         name: p.name,
         costPrice: parseFloat(p.costPrice || 0),
         sellingPrice: parseFloat(p.sellingPrice || 0),
         initialStock: parseFloat(p.initialStock || 0),
         quantitySold: parseFloat(p.quantitySold || 0),
         lowStockThreshold: parseFloat(p.lowStockThreshold || 0),
-        currentStock: p.currentStock,
+        currentStock: Number.isFinite(p.currentStock) ? p.currentStock : 0,
       })),
       generalExpenses: generalExpenses.map((exp) => ({
+        id: exp.id,
         name: exp.name,
         amount: parseFloat(exp.amount || 0),
       })),
-      totalSales: totalSales,
-      totalExpenses: totalExpenses,
+      totalSales,
+      totalExpenses,
       profitOrLoss: difference,
-      timestamp: serverTimestamp(),
     };
 
     try {
       if (isExistingSheet) {
-        const docRef = doc(db, `users/${user.uid}/traderSheets`, sheetId);
-        await updateDoc(docRef, sheetData);
-        Alert.alert("Success", "Sheet updated successfully!");
+        await updateSheet(String(resolvedSheetId), sheetData);
+        Alert.alert("Success", "Sheet updated locally!");
       } else {
-        await addDoc(
-          collection(db, `users/${user.uid}/traderSheets`),
-          sheetData
-        );
-        Alert.alert("Success", "New sheet saved to Firebase!");
+        await createSheet(sheetData);
+        Alert.alert("Success", "New sheet saved locally!");
       }
     } catch (e) {
-      console.error("Error saving document: ", e);
-      Alert.alert("Error", "Failed to save data to Firebase.");
+      console.error("Error saving sheet: ", e);
+      Alert.alert("Error", "Failed to save sheet to local storage.");
     }
   };
 

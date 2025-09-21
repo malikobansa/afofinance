@@ -7,22 +7,10 @@ import {
   StyleSheet,
   ScrollView,
   Alert,
-  ActivityIndicator,
 } from "react-native";
-import { useLocalSearchParams } from "expo-router";
-import AsyncStorage from "@react-native-async-storage/async-storage";
-import { CommonStyles } from "../../../components/CommonStyles"
-import { db } from "../../../firebaseConfig";
-import {
-  doc,
-  getDoc,
-  updateDoc,
-  collection,
-  addDoc,
-  serverTimestamp,
-} from "firebase/firestore";
-import { useAuth } from "../../../context/AuthContext";
+import { CommonStyles } from "../../../components/CommonStyles";
 
+/* ---------------------------- Reusable Row ---------------------------- */
 const EditableInputRow = ({
   label,
   value,
@@ -44,166 +32,72 @@ const EditableInputRow = ({
 };
 
 export default function ArtisanAccountSheet() {
-  const { sheetId } = useLocalSearchParams();
-  const { user } = useAuth();
-  const [loading, setLoading] = useState(true);
   const [expenses, setExpenses] = useState([]);
   const [workmanship, setWorkmanship] = useState([]);
   const [sheetTitle, setSheetTitle] = useState("");
   const [currencySymbol, setCurrencySymbol] = useState("₦");
 
-  const isExistingSheet = !!sheetId;
-
+  // Init defaults (no backend)
   useEffect(() => {
-    const fetchSheetData = async () => {
-      if (!user) {
-        Alert.alert("Error", "User not authenticated.");
-        setLoading(false);
-        return;
-      }
+    setExpenses([
+      { id: "logistics", name: "Logistics", amount: "" },
+      { id: "phone", name: "Phone Calls", amount: "" },
+      { id: "feeding", name: "Feeding", amount: "" },
+    ]);
+    setWorkmanship([{ id: Date.now().toString(), description: "", amount: "" }]);
+    setSheetTitle(`New Artisan Sheet - ${new Date().toLocaleDateString()}`);
+  }, []);
 
-      try {
-        const storedCurrencyCode = await AsyncStorage.getItem("userCurrency");
-        if (storedCurrencyCode) {
-          const symbols = { NGN: "₦", USD: "$", EUR: "€", GBP: "£" };
-          setCurrencySymbol(symbols[storedCurrencyCode] || "₦");
-        }
-      } catch (e) {
-        console.error("Failed to load currency from storage", e);
-      }
-
-      if (isExistingSheet) {
-        try {
-          const docRef = doc(db, `users/${user.uid}/artisanSheets`, sheetId);
-          const docSnap = await getDoc(docRef);
-          if (docSnap.exists()) {
-            const data = docSnap.data();
-            setExpenses(data.expenses || []);
-            setWorkmanship(data.workmanship || []);
-            setSheetTitle(data.title || "");
-          } else {
-            Alert.alert("Error", "Sheet not found.");
-          }
-        } catch (e) {
-          console.error("Error fetching document:", e);
-          Alert.alert("Error", "Failed to load sheet data.");
-        }
-      } else {
-        setExpenses([
-          { id: "logistics", name: "Logistics", amount: "" },
-          { id: "phone", name: "Phone Calls", amount: "" },
-          { id: "feeding", name: "Feeding", amount: "" },
-        ]);
-        setWorkmanship([
-          { id: Date.now().toString(), description: "", amount: "" },
-        ]);
-        setSheetTitle(`New Artisan Sheet - ${new Date().toLocaleDateString()}`);
-      }
-      setLoading(false);
+  const toNum = (v) => {
+    const n = parseFloat(String(v).replace(/,/g, ""));
+    return Number.isFinite(n) ? n : 0;
     };
 
-    fetchSheetData();
-  }, [sheetId, user]);
-
   const handleExpenseChange = (id, value) => {
-    const newExpenses = expenses.map((exp) =>
-      exp.id === id ? { ...exp, amount: value } : exp
+    setExpenses((prev) =>
+      prev.map((exp) => (exp.id === id ? { ...exp, amount: value } : exp))
     );
-    setExpenses(newExpenses);
   };
 
   const addWorkmanshipEntry = () => {
-    setWorkmanship([
-      ...workmanship,
+    setWorkmanship((prev) => [
+      ...prev,
       { id: Date.now().toString(), description: "", amount: "" },
     ]);
   };
 
   const handleWorkmanshipChange = (index, field, value) => {
-    const newWorkmanship = [...workmanship];
-    newWorkmanship[index][field] = value;
-    setWorkmanship(newWorkmanship);
+    setWorkmanship((prev) => {
+      const next = [...prev];
+      next[index] = { ...next[index], [field]: value };
+      return next;
+    });
   };
 
-  const calculateTotalExpenses = () => {
-    return expenses.reduce((sum, exp) => {
-      return sum + parseFloat(exp.amount || 0);
-    }, 0);
-  };
+  const calculateTotalExpenses = () =>
+    expenses.reduce((sum, exp) => sum + toNum(exp.amount), 0);
 
-  const calculateTotalWorkmanship = () => {
-    return workmanship.reduce((sum, entry) => {
-      return sum + parseFloat(entry.amount || 0);
-    }, 0);
-  };
+  const calculateTotalWorkmanship = () =>
+    workmanship.reduce((sum, entry) => sum + toNum(entry.amount), 0);
 
-  const handleSaveOrSubmit = async () => {
-    if (!user) {
-      Alert.alert("Error", "You must be logged in to save data.");
-      return;
-    }
-
+  const handleCalculate = () => {
     const totalExpenses = calculateTotalExpenses();
     const totalWorkmanship = calculateTotalWorkmanship();
     const difference = totalWorkmanship - totalExpenses;
 
-    let alertMessage = "";
+    let msg = "";
     if (difference > 0) {
-      alertMessage = `Congratulations, you made ${currencySymbol}${difference.toFixed(
-        2
-      )} profit! 🎉`;
+      msg = `Congratulations, you made ${currencySymbol}${difference.toFixed(2)} profit! 🎉`;
     } else if (difference < 0) {
-      alertMessage = `Sorry, you made a loss of ${currencySymbol}${Math.abs(
-        difference
-      ).toFixed(2)}. Next time can be better. 📉`;
+      msg = `You made a loss of ${currencySymbol}${Math.abs(difference).toFixed(2)}. 📉`;
     } else {
-      alertMessage = "You broke even! No profit, no loss. 📊";
+      msg = "You broke even! No profit, no loss. 📊";
     }
-
-    Alert.alert("Calculation Result", alertMessage);
-
-    const sheetData = {
-      title: sheetTitle,
-      type: "artisan",
-      expenses: expenses.map((exp) => ({
-        name: exp.name,
-        amount: parseFloat(exp.amount || 0),
-      })),
-      workmanship: workmanship.map((entry) => ({
-        description: entry.description,
-        amount: parseFloat(entry.amount || 0),
-      })),
-      totalWorkmanship: totalWorkmanship,
-      totalExpenses: totalExpenses,
-      profitOrLoss: difference,
-      timestamp: serverTimestamp(),
-    };
-
-    try {
-      if (isExistingSheet) {
-        const docRef = doc(db, `users/${user.uid}/artisanSheets`, sheetId);
-        await updateDoc(docRef, sheetData);
-        Alert.alert("Success", "Sheet updated successfully!");
-      } else {
-        await addDoc(
-          collection(db, `users/${user.uid}/artisanSheets`),
-          sheetData
-        );
-        Alert.alert("Success", "New sheet saved to Firebase!");
-      }
-    } catch (e) {
-      console.error("Error saving document: ", e);
-      Alert.alert("Error", "Failed to save data to Firebase.");
-    }
+    Alert.alert("Calculation Result", msg);
   };
 
-  if (loading) {
-    return (
-      <View style={CommonStyles.loadingContainer}>
-        <ActivityIndicator size="large" color="#007bff" />
-      </View>
-    );
-  }
+  const totalExpenses = calculateTotalExpenses();
+  const totalWork = calculateTotalWorkmanship();
 
   return (
     <ScrollView style={CommonStyles.container}>
@@ -213,6 +107,18 @@ export default function ArtisanAccountSheet() {
           value={sheetTitle}
           onChangeText={setSheetTitle}
           placeholder="Enter a title for this sheet"
+        />
+      </View>
+
+      {/* Currency (simple text input to keep it backend-free) */}
+      <View style={styles.inlineRow}>
+        <Text style={styles.inlineLabel}>Currency Symbol:</Text>
+        <TextInput
+          style={styles.inlineInput}
+          value={currencySymbol}
+          onChangeText={setCurrencySymbol}
+          placeholder="₦ / $ / € / £"
+          maxLength={2}
         />
       </View>
 
@@ -230,7 +136,7 @@ export default function ArtisanAccountSheet() {
           ))}
           <Text style={CommonStyles.totalText}>
             Total Expenses: {currencySymbol}
-            {calculateTotalExpenses().toFixed(2)}
+            {totalExpenses.toFixed(2)}
           </Text>
         </View>
 
@@ -257,25 +163,17 @@ export default function ArtisanAccountSheet() {
               />
             </View>
           ))}
-          <TouchableOpacity
-            style={styles.addMoreButton}
-            onPress={addWorkmanshipEntry}
-          >
+          <TouchableOpacity style={styles.addMoreButton} onPress={addWorkmanshipEntry}>
             <Text style={styles.addMoreButtonText}>+ Add Work Entry</Text>
           </TouchableOpacity>
           <Text style={CommonStyles.totalText}>
             Total Workmanship: {currencySymbol}
-            {calculateTotalWorkmanship().toFixed(2)}
+            {totalWork.toFixed(2)}
           </Text>
         </View>
 
-        <TouchableOpacity
-          style={CommonStyles.submitButton}
-          onPress={handleSaveOrSubmit}
-        >
-          <Text style={CommonStyles.submitButtonText}>
-            {isExistingSheet ? "Update Sheet" : "Save Sheet & Calculate"}
-          </Text>
+        <TouchableOpacity style={CommonStyles.submitButton} onPress={handleCalculate}>
+          <Text style={CommonStyles.submitButtonText}>Calculate Profit/Loss</Text>
         </TouchableOpacity>
       </View>
     </ScrollView>
@@ -320,5 +218,23 @@ const styles = StyleSheet.create({
     color: "#fff",
     fontSize: 16,
     fontWeight: "bold",
+  },
+  inlineRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    marginBottom: 12,
+  },
+  inlineLabel: {
+    fontSize: 14,
+    fontWeight: "600",
+  },
+  inlineInput: {
+    borderWidth: 1,
+    borderColor: "#ccc",
+    borderRadius: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    minWidth: 60,
   },
 });
