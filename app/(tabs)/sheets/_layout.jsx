@@ -1,6 +1,5 @@
 import { Tabs } from "expo-router";
-import Ionicons from "@expo/vector-icons/Ionicons";
-import PlusButton from "../../../components/PlusButton";
+import { Ionicons } from "@expo/vector-icons";
 
 export default function TabLayout() {
   return (
@@ -9,27 +8,79 @@ export default function TabLayout() {
         headerShown: false,
         tabBarActiveTintColor: "#007bff",
         tabBarShowLabel: true,
+        tabBarInactiveTintColor: "#8e8e93",
+        tabBarStyle: {
+          backgroundColor: "#ffffff",
+        },
       }}
     >
-      {/* Home Tab */}
       <Tabs.Screen
-        name="index" // This points to app/(tabs)/index.jsx
+        name="index"
         options={{
           title: "Home",
-          tabBarIcon: ({ color, size }) => (
-            <Ionicons name="home" size={size} color={color} />
+          tabBarIcon: ({ color, size, focused }) => (
+            <Ionicons 
+              name={focused ? "home" : "home-outline"} 
+              size={size} 
+              color={color} 
+            />
           ),
         }}
       />
 
-      {/* Sheets Tab */}
       <Tabs.Screen
-        name="sheets/list" // <-- Notice it's now "sheets/list"
+        name="salary"
         options={{
-          title: "",
-          tabBarIcon: ({ focused }) => <PlusButton focused={focused} />,
-          headerShown: false,
-          tabBarLabel: () => null, // Hides the label for FAB look
+          title: "Salary",
+          tabBarIcon: ({ color, size, focused }) => (
+            <Ionicons 
+              name={focused ? "cash" : "cash-outline"} 
+              size={size} 
+              color={color} 
+            />
+          ),
+        }}
+      />
+
+      <Tabs.Screen
+        name="artisan"
+        options={{
+          title: "Artisan",
+          tabBarIcon: ({ color, size, focused }) => (
+            <Ionicons 
+              name={focused ? "construct" : "construct-outline"} 
+              size={size} 
+              color={color} 
+            />
+          ),
+        }}
+      />
+
+      <Tabs.Screen
+        name="trader"
+        options={{
+          title: "Trader",
+          tabBarIcon: ({ color, size, focused }) => (
+            <Ionicons 
+              name={focused ? "cart" : "cart-outline"} 
+              size={size} 
+              color={color} 
+            />
+          ),
+        }}
+      />
+
+      <Tabs.Screen
+        name="list"
+        options={{
+          title: "List",
+          tabBarIcon: ({ color, size, focused }) => (
+            <Ionicons 
+              name={focused ? "list" : "list-outline"} 
+              size={size} 
+              color={color} 
+            />
+          ),
         }}
       />
     </Tabs>

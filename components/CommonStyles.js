@@ -68,7 +68,7 @@ export const CommonStyles = StyleSheet.create({
     borderRadius: 8,
     alignItems: "center",
     marginTop: 30,
-    marginBottom: 20,
+    marginBottom: 50,
     width: "80%",
     alignSelf: "center",
   },
